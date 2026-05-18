@@ -1,0 +1,3 @@
+DPDK Benchmark Results:
+Average Latency: 0.354 microseconds
+Sub-10us Requirement Met: Yes
