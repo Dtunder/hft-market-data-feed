@@ -1,0 +1,6 @@
+aiohttp
+websockets
+orjson
+pytest
+pytest-asyncio
+aioresponses
