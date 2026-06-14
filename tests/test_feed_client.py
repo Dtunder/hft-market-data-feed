@@ -2,7 +2,7 @@ import asyncio
 import json
 import pytest
 import websockets
-from websockets.server import serve
+from websockets.asyncio.server import serve
 from src.binance_feed import BinanceTestnetFeedClient
 
 async def mock_binance_server(websocket):
