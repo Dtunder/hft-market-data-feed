@@ -3,11 +3,10 @@ import json
 import time
 import websockets
 import orjson
+from src.ring_buffer import LockFreeRingBuffer
 
 class MultiSymbolFeed:
-    """
-    WebSocket client for aggregating multiple symbols from Binance combined streams.
-    """
+    # (Kept for compatibility if anything else uses it)
     def __init__(self, symbols: list, use_mainnet: bool = False):
         self.symbols = [s.lower() for s in symbols]
         self.use_mainnet = use_mainnet
@@ -56,67 +55,131 @@ class MultiSymbolFeed:
     def stop(self):
         self.running = False
 
-
 class HFTMarketDataFeed:
     """
     High-performance real-time WebSocket client for HFT order book/trade ingestion.
     Aims for sub-millisecond parsing latency.
     """
-    def __init__(self, symbol="btcusdt", use_mainnet: bool = False):
+    def __init__(self, symbol="btcusdt", use_mainnet: bool = False, ring_buffer_name: str = "binance_feed"):
         self.symbol = symbol.lower()
         self.use_mainnet = use_mainnet
 
-        if self.use_mainnet:
-            ws_base = "wss://stream.binance.com:9443/ws"
-            rest_base = "https://api.binance.com/api/v3"
-        else:
-            ws_base = "wss://testnet.binance.vision/ws"
-            rest_base = "https://testnet.binance.vision/api/v3"
-
-        self.ws_uri = ws_base
-        self.rest_uri = rest_base
-
-        # Public Binance WebSocket stream URL for raw aggregate trades
-        self.uri = f"{ws_base}/{self.symbol}@aggTrade"
         self.running = False
+        self.buffer = LockFreeRingBuffer(name=ring_buffer_name, size=10000, element_size=2048, create=True)
+
+        streams = f"{self.symbol}@depth5@100ms/{self.symbol}@aggTrade"
+
+        if self.use_mainnet:
+            self.ws_uri = f"wss://stream.binance.com:9443/stream?streams={streams}"
+            self.rest_uri = "https://api.binance.com/api/v3"
+        else:
+            self.ws_uri = f"wss://testnet.binance.vision/stream?streams={streams}"
+            self.rest_uri = "https://testnet.binance.vision/api/v3"
+
+        # State tracking
+        self.orderbooks = {self.symbol: {"bids": [], "asks": []}}
+        self.latest_trades = {self.symbol: {}}
+        self.last_update_ids = {self.symbol: None}
         self.trade_count = 0
         self.start_time = None
 
+    def get_latest_orderbook(self, symbol: str) -> tuple:
+        sym = symbol.lower()
+        if sym in self.orderbooks:
+            return self.orderbooks[sym]["bids"], self.orderbooks[sym]["asks"]
+        return [], []
+
+    def get_latest_trade(self, symbol: str) -> dict:
+        sym = symbol.lower()
+        return self.latest_trades.get(sym, {})
+
     async def connect_and_stream(self):
-        print(f"[FEED] Connecting to live HFT feed: {self.uri}")
+        print(f"[FEED] Connecting to live HFT feed: {self.ws_uri}")
         self.running = True
         self.start_time = time.time()
         
-        async with websockets.connect(self.uri) as websocket:
-            print("[FEED] Connection established. Ingesting high-speed trade packets...")
-            while self.running:
-                try:
-                    # Capture raw WebSocket packet
-                    packet = await websocket.recv()
-                    recv_time = time.time()
-                    
-                    # High-speed JSON parsing
-                    data = json.loads(packet)
-                    self.trade_count += 1
-                    
-                    # Calculate transit latency (packet timestamp vs local time)
-                    event_time = data.get("E", 0) / 1000.0
-                    latency_ms = (recv_time - event_time) * 1000.0
-                    
-                    # Print statistics every 50 trades to avoid console print overhead
-                    if self.trade_count % 50 == 0:
-                        elapsed = time.time() - self.start_time
-                        rate = self.trade_count / elapsed
-                        price = data.get("p", "0.0")
-                        quantity = data.get("q", "0.0")
-                        print(f"[FEED] Trades Ingested: {self.trade_count} | Speed: {rate:.2f} trades/sec | Last Price: {price} | Latency: {latency_ms:.2f}ms")
+        retry_count = 0
+        max_retries = 5
+        base_delay = 1.0
+
+        while self.running and retry_count <= max_retries:
+            try:
+                async with websockets.connect(self.ws_uri) as websocket:
+                    print("[FEED] Connection established. Ingesting high-speed trade packets...")
+                    retry_count = 0  # reset on successful connection
+                    self.last_update_ids = {self.symbol: None} # Reset sequence tracking on reconnect
+
+                    while self.running:
+                        # Capture raw WebSocket packet
+                        packet = await websocket.recv()
+
+                        # High-speed JSON parsing < 1ms using orjson
+                        t1 = time.perf_counter()
+                        data = orjson.loads(packet)
+
+                        # Push raw message to lock-free ring buffer
+                        self.buffer.push(packet if isinstance(packet, bytes) else packet.encode('utf-8'))
                         
-                except websockets.exceptions.ConnectionClosed:
-                    print("[FEED] Warning: WebSocket connection closed. Reconnecting...")
+                        # Process state
+                        if "stream" in data and "data" in data:
+                            stream_name = data["stream"]
+                            payload = data["data"]
+
+                            if "@depth" in stream_name:
+                                # Sequence validation for @depth5 which uses lastUpdateId
+                                if "lastUpdateId" in payload:
+                                    last_u = self.last_update_ids.get(self.symbol)
+                                    if last_u is not None and payload["lastUpdateId"] <= last_u:
+                                        print(f"[FEED] Sequence mismatch for {self.symbol}. Expected >{last_u}, got {payload['lastUpdateId']}")
+                                        raise ConnectionError("Sequence mismatch")
+                                    self.last_update_ids[self.symbol] = payload["lastUpdateId"]
+
+                                self.orderbooks[self.symbol]["bids"] = payload.get("bids", []) or payload.get("b", [])
+                                self.orderbooks[self.symbol]["asks"] = payload.get("asks", []) or payload.get("a", [])
+
+                            elif "@aggTrade" in stream_name:
+                                self.latest_trades[self.symbol] = payload
+                                self.trade_count += 1
+
+                                t2 = time.perf_counter()
+                                latency_ms = (t2 - t1) * 1000.0
+
+                                # Print statistics every 50 trades to avoid console print overhead
+                                if self.trade_count % 50 == 0:
+                                    elapsed = time.time() - self.start_time
+                                    rate = self.trade_count / elapsed
+                                    price = payload.get("p", "0.0")
+                                    print(f"[FEED] Trades Ingested: {self.trade_count} | Speed: {rate:.2f} trades/sec | Last Price: {price} | Latency: {latency_ms:.2f}ms")
+
+            except (websockets.exceptions.ConnectionClosed, websockets.exceptions.InvalidStatus, ConnectionError) as e:
+                if not self.running:
                     break
-                except Exception as e:
-                    print(f"[FEED] Error parsing packet: {e}")
+                retry_count += 1
+                if retry_count > max_retries:
+                    print(f"[FEED] Max retries reached. Stopping.")
                     break
+
+                delay = base_delay * (2 ** (retry_count - 1))
+                print(f"[FEED] Disconnected ({e}). Reconnecting in {delay}s... (Attempt {retry_count}/{max_retries})")
+                await asyncio.sleep(delay)
+            except Exception as e:
+                print(f"[FEED] Unexpected error: {e}")
+                if not self.running:
+                    break
+                retry_count += 1
+                if retry_count > max_retries:
+                    print(f"[FEED] Max retries reached. Stopping.")
+                    break
+
+                delay = base_delay * (2 ** (retry_count - 1))
+                print(f"[FEED] Unexpected Disconnected ({e}). Reconnecting in {delay}s... (Attempt {retry_count}/{max_retries})")
+                await asyncio.sleep(delay)
+
+    def stop(self):
+        self.running = False
+        if hasattr(self, 'buffer'):
+            self.buffer.close()
+            self.buffer.unlink()
 
 async def main():
     # Show old single-symbol usage
@@ -138,7 +201,7 @@ async def main():
     await asyncio.sleep(10)
 
     print("\n[MAIN] Stopping feeds...")
-    old_feed.running = False
+    old_feed.stop()
     multi_feed.stop()
 
     # Wait for tasks to finish cleanly (they will exit their while loops)

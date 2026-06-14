@@ -3,7 +3,7 @@ import json
 import pytest
 import websockets
 from websockets.asyncio.server import serve
-from src.binance_feed import BinanceTestnetFeedClient
+from src.feed_client import HFTMarketDataFeed
 
 async def mock_binance_server(websocket):
     # Send a depth5 message
@@ -54,7 +54,7 @@ async def test_feed_client_integration():
     # Start mock server
     server = await serve(mock_binance_server, "localhost", 8765)
 
-    client = BinanceTestnetFeedClient(["btcusdt"], ring_buffer_name="test_feed")
+    client = HFTMarketDataFeed(symbol="btcusdt", ring_buffer_name="test_feed")
     client.ws_uri = "ws://localhost:8765"  # Override URI to hit our mock
 
     # Run the client connect in background
@@ -103,7 +103,7 @@ async def test_feed_client_reconnection():
         await asyncio.sleep(0.2)
         # Connection ends here, forcing client to reconnect
 
-    client = BinanceTestnetFeedClient(["ethusdt"], ring_buffer_name="test_reconnect")
+    client = HFTMarketDataFeed(symbol="ethusdt", ring_buffer_name="test_reconnect")
     client.ws_uri = "ws://localhost:8766"  # override
 
     server_task = None
