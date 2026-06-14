@@ -59,14 +59,13 @@ class BinanceTestnetFeedClient:
 
                             symbol = stream_name.split("@")[0]
                             if "@depth" in stream_name:
-                                # Sequence validation
-                                if "u" in payload and "pu" in payload:
+                                # Sequence validation for @depth5 which uses lastUpdateId
+                                if "lastUpdateId" in payload:
                                     last_u = self.last_update_ids.get(symbol)
-                                    if last_u is not None and payload["pu"] != last_u:
-                                        print(f"[FEED] Sequence mismatch for {symbol}. Expected pu={last_u}, got {payload['pu']}")
-                                        # Sequence mismatch is critical, force reconnect
+                                    if last_u is not None and payload["lastUpdateId"] <= last_u:
+                                        print(f"[FEED] Sequence mismatch for {symbol}. Expected >{last_u}, got {payload['lastUpdateId']}")
                                         raise ConnectionError("Sequence mismatch")
-                                    self.last_update_ids[symbol] = payload["u"]
+                                    self.last_update_ids[symbol] = payload["lastUpdateId"]
 
                                 self.orderbooks[symbol]["bids"] = payload.get("bids", []) or payload.get("b", [])
                                 self.orderbooks[symbol]["asks"] = payload.get("asks", []) or payload.get("a", [])
