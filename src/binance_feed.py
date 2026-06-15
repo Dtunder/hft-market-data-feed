@@ -10,7 +10,7 @@ class BinanceTestnetFeedClient:
         self.running = False
         self.buffer = LockFreeRingBuffer(name=ring_buffer_name, size=10000, element_size=2048, create=True)
 
-        streams = "/".join(f"{s}@depth5@100ms/{s}@aggTrade" for s in self.symbols)
+        streams = "/".join(f"{s}@depth5/{s}@aggTrade" for s in self.symbols)
         self.ws_uri = f"wss://testnet.binance.vision/stream?streams={streams}"
 
         # State tracking

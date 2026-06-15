@@ -8,7 +8,7 @@ from src.binance_feed import BinanceTestnetFeedClient
 async def mock_binance_server(websocket):
     # Send a depth5 message
     depth_msg = {
-        "stream": "btcusdt@depth5@100ms",
+        "stream": "btcusdt@depth5",
         "data": {
             "lastUpdateId": 160,
             "bids": [
@@ -81,7 +81,7 @@ async def test_feed_client_integration():
 
     data1 = json.loads(msg1)
     data2 = json.loads(msg2)
-    assert data1["stream"] == "btcusdt@depth5@100ms"
+    assert data1["stream"] == "btcusdt@depth5"
     assert data2["stream"] == "btcusdt@aggTrade"
 
     # Cleanup
@@ -95,7 +95,7 @@ async def test_feed_client_reconnection():
     # Only serve 1 message then close to force reconnect
     async def dropping_server(websocket):
         depth_msg = {
-            "stream": "ethusdt@depth5@100ms",
+            "stream": "ethusdt@depth5",
             "data": {"bids": [], "asks": []}
         }
         await websocket.send(json.dumps(depth_msg))
