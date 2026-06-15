@@ -106,4 +106,3 @@ class BinanceTestnetFeedClient:
         self.running = False
         self.buffer.close()
         self.buffer.unlink()
-# End of file

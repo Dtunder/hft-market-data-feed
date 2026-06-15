@@ -117,4 +117,3 @@ class LockFreeRingBuffer:
                 self.shm.unlink()
             except FileNotFoundError:
                 pass
-# End of file

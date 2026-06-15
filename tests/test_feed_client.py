@@ -138,4 +138,3 @@ async def test_feed_client_reconnection():
 
     assert msg1 is not None, "First message not received"
     assert msg2 is not None, "Second message not received, reconnect failed?"
-# End of file
