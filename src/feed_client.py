@@ -118,33 +118,32 @@ class HFTMarketDataFeed:
                     print(f"[FEED] Error parsing packet: {e}")
                     break
 
+from src.binance_feed import BinanceTestnetFeedClient
+
 async def main():
-    # Show old single-symbol usage
-    old_feed = HFTMarketDataFeed()
+    print("[MAIN] Starting BinanceTestnetFeedClient for 10 seconds...")
+    feed = BinanceTestnetFeedClient(["btcusdt"])
 
-    # Show new multi-symbol usage
-    multi_feed = MultiSymbolFeed(["btcusdt", "ethusdt"], use_mainnet=False)
+    # Run the client connect in background
+    task = asyncio.create_task(feed.connect_and_stream())
 
-    async def demo_callback(stream, data):
-        print(f"[{stream}] event_type={data.get('e')}")
+    # Monitor output for a few seconds
+    for _ in range(10):
+        await asyncio.sleep(1.0)
 
-    multi_feed.add_callback(demo_callback)
+        # Check orderbook
+        bids, asks = feed.get_latest_orderbook("btcusdt")
+        if bids and asks:
+            print(f"[MAIN] Best bid: {bids[0][0]}, Best ask: {asks[0][0]}")
 
-    print("[MAIN] Starting feeds for 10 seconds...")
+        # Check latest trade
+        trade = feed.get_latest_trade("btcusdt")
+        if trade:
+            print(f"[MAIN] Latest trade price: {trade.get('p')}")
 
-    task_old = asyncio.create_task(old_feed.connect_and_stream())
-    task_multi = asyncio.create_task(multi_feed.connect_and_stream())
-
-    await asyncio.sleep(10)
-
-    print("\n[MAIN] Stopping feeds...")
-    old_feed.running = False
-    multi_feed.stop()
-
-    # Wait for tasks to finish cleanly (they will exit their while loops)
-    # Using gather with return_exceptions=True to avoid unhandled exceptions
-    # crashing the script if connection fails (e.g., HTTP 451 from Binance)
-    await asyncio.gather(task_old, task_multi, return_exceptions=True)
+    print("\n[MAIN] Stopping feed...")
+    feed.stop()
+    await asyncio.gather(task, return_exceptions=True)
 
 if __name__ == "__main__":
     try:
